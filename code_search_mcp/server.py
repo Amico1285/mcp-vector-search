@@ -51,46 +51,102 @@ def get_searcher():
     return _searcher
 
 
+def _result_score_value(result):
+    """Pick the most informative score for a result (rerank_score wins over semantic distance)."""
+    if result.get('rerank_score') is not None:
+        return result['rerank_score'], 'rerank'
+    if result.get('score') is not None:
+        return result['score'], 'semantic'
+    return None, None
+
+
+def _pipeline_budget_line(stats: dict) -> str:
+    """One-line summary of how the search pipeline shrunk the candidate pool."""
+    if not stats:
+        return ""
+    parts = [f"SEMANTIC_SEARCH_N_RESULTS={stats['semantic_n']} -> {stats['after_semantic']} candidates"]
+    if stats['reranker_used']:
+        parts.append(
+            f"reranker (threshold {stats['reranker_threshold']:.2f}) kept {stats['after_reranker']}"
+        )
+    else:
+        parts.append("reranker disabled")
+    if stats['ai_filter_used']:
+        parts.append(f"AI filter kept {stats['after_ai_filter']}")
+    parts.append(f"MAX_RESULTS={stats['max_results']} -> returned {stats['returned']}")
+    return "Pipeline: " + " | ".join(parts)
+
+
+def _score_interpretation_line(stats: dict) -> str:
+    """One-line guidance on how to read the score column."""
+    use_rerank = stats and stats.get('reranker_used')
+    if use_rerank:
+        return (
+            f"Score: reranker relevance (model: {env_config.get_reranker_model()}). "
+            f"HIGHER = more relevant. Files below RERANKER_THRESHOLD are filtered out; "
+            f"scores below ~0.50 are typically not relevant."
+        )
+    return "Score: semantic distance (no reranker). LOWER = more relevant. No fixed threshold."
+
+
+def _truncate_chars(content: str, max_chars: int) -> str:
+    """Cut content to max_chars, append ellipsis if truncated. -1 means no cut."""
+    if max_chars == -1 or len(content) <= max_chars:
+        return content
+    return content[:max_chars].rstrip() + "..."
+
+
 @app.tool()
 def search_files(query: str) -> str:
     """
-    Semantic file search. Search through codebase files using natural language queries. 
-    Returns the most relevant files as file path and first N lines of file.
-    
+    Semantic file search. Search through codebase files using natural language queries.
+
+    Always returns: a header (pipeline budget + score interpretation), then a
+    numbered list of `path — score`. Per-file content preview is controlled by
+    PREVIEW_CHARS_OUTPUT:
+      - 0  -> no preview (agentic flow: read selected files via Read/Grep/Glob)
+      - N  -> first N characters of each file
+      - -1 -> entire file
+
     Args:
         query: Search query (e.g., "button component", "theme configuration")
-    
+
     Examples:
         search_files("button dropdown component")
     """
     try:
         searcher = get_searcher()
         results = searcher.search(query)
-        
+        stats = getattr(searcher, 'last_search_stats', None)
+
         if not results:
             return f"No files found matching query: '{query}'"
-        
-        output = [f"Found {len(results)} files matching '{query}'"]
-        output.append("")
-        
-        # Get output preview lines setting from environment
-        output_lines = env_config.get_preview_lines_output()
-        
+
+        preview_chars = env_config.get_preview_chars_output()
+
+        header = [f"Found {len(results)} candidate files for '{query}'."]
+        pipeline_line = _pipeline_budget_line(stats)
+        if pipeline_line:
+            header.append(pipeline_line)
+        header.append(_score_interpretation_line(stats))
+
+        body = [""]
         for i, result in enumerate(results, 1):
-            output.append(f"=== [{i}] {result['path']} ===")
-            # Truncate content for output
-            content = result['content']
-            if output_lines != -1:
-                lines = content.split('\n')
-                if len(lines) > output_lines:
-                    content = '\n'.join(lines[:output_lines]) + '\n...'
-            output.append(content)
-            output.append("")
-        
-        output.append(f"--- Total: {len(results)} files found ---")
-        
-        return "\n".join(output)
-        
+            score_val, _ = _result_score_value(result)
+            score_str = f"{score_val:.5f}" if score_val is not None else "n/a"
+            if preview_chars == 0:
+                body.append(f"{i}. {result['path']} — {score_str}")
+            else:
+                body.append(f"=== [{i}] {result['path']} — {score_str} ===")
+                body.append(_truncate_chars(result.get('content', ''), preview_chars))
+                body.append("")
+
+        if preview_chars == 0:
+            body.append("")
+            body.append("Open the most relevant files via Read/Grep/Glob to inspect their content.")
+
+        return "\n".join(header + body)
+
     except Exception as e:
         return f"Error searching files: {str(e)}"
 
@@ -131,7 +187,7 @@ def get_server_info() -> str:
                             logger.warning(f"[SERVER] Process {pid} not found, clearing stale status file")
                             status_path.unlink()
                             update_status = None
-            except Exception:
+            except:
                 pass
         
         # If update is running, show that first
@@ -290,10 +346,19 @@ def get_server_info() -> str:
             result.append(f"{ai_filter_status} AI Filter: {ai_filter_message}")
         result.append("")
         
+        preview_chars = env_config.get_preview_chars_output()
+        if preview_chars == 0:
+            preview_label = "0 (paths + scores only — agentic flow)"
+        elif preview_chars == -1:
+            preview_label = "-1 (entire file)"
+        else:
+            preview_label = f"{preview_chars} chars"
+
         result.append("Configuration:")
         result.append(f"- Reranker: {'Enabled' if reranker_enabled else 'Disabled'}")
         result.append(f"- Reranker Threshold: {reranker_threshold}")
         result.append(f"- Max Results: {max_results}")
+        result.append(f"- Preview Chars Output: {preview_label}")
         result.append("")
         
         result.append("Database:")
@@ -429,7 +494,7 @@ Try creating a new configuration:
                     status = json.load(f)
                     if status.get('status') == 'running':
                         return "Database update is already running. Use get_server_info() to check progress."
-            except Exception:
+            except:
                 pass
         
         # Start update in background thread - no analyze parameter needed
@@ -479,7 +544,7 @@ def reset_db() -> str:
                     status = json.load(f)
                     if status.get('status') == 'running':
                         return "❌ Cannot reset database while update is running. Please wait for it to complete."
-            except Exception:
+            except:
                 pass
         
         # Log the reset operation if verbose logging is enabled
@@ -532,7 +597,7 @@ def reset_db() -> str:
                             orphaned_count += 1
                             if env_config.get_logging_verbose():
                                 logger.info(f"[RESET_DB] Removed orphaned directory: {item.name}")
-                        except Exception:
+                        except:
                             pass
                 
                 if orphaned_count > 0 and env_config.get_logging_verbose():
@@ -554,7 +619,7 @@ def reset_db() -> str:
                 try:
                     file.unlink()
                     status_files_cleared += 1
-                except Exception:
+                except:
                     pass
         
         if status_files_cleared > 0 and env_config.get_logging_verbose():
@@ -744,7 +809,7 @@ def set_config(
                 config = metadata.get('config', {})
                 if isinstance(config, str):
                     config = json.loads(config)
-            except Exception:
+            except:
                 # Collection doesn't exist yet
                 pass
         
@@ -839,7 +904,7 @@ def set_config(
                     name=db_name,
                     metadata={'config': json.dumps(config), 'vectorized': 'false'}
                 )
-            except Exception:
+            except:
                 # Collection might exist, get it
                 collection = client.get_collection(name=db_name)
                 collection.modify(metadata={'config': json.dumps(config), 'vectorized': 'false'})

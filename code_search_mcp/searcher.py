@@ -61,7 +61,8 @@ class CodebaseSearcher:
         self.codebase_path = Path(codebase_path)
         if not self.codebase_path.exists():
             raise ValueError(f"Codebase path does not exist: {codebase_path}")
-        
+
+        self.last_search_stats = None
         self.db_name = db_name
         
         # Initialize embedding provider
@@ -122,7 +123,7 @@ class CodebaseSearcher:
             # Use environment values
             semantic_n = env_config.get_semantic_search_n_results()
             max_results = env_config.get_max_results()
-            
+
             if env_config.get_logging_verbose():
                 logger.info(f"[SEARCHER] Starting search for: '{query}'")
                 logger.info(f"[SEARCHER] Config: semantic_n={semantic_n}, max_results={max_results}, " +
@@ -265,38 +266,56 @@ class CodebaseSearcher:
                             'score': results['distances'][0][i] if results['distances'] else None
                         })
             
+            after_semantic = len(formatted_results)
             if env_config.get_logging_verbose():
-                logger.info(f"[SEARCHER] Semantic search found {len(formatted_results)} results")
-            
+                logger.info(f"[SEARCHER] Semantic search found {after_semantic} results")
+
             # Step 2: Apply reranker if enabled
-            if env_config.get_reranker_enabled() and formatted_results:
+            reranker_used = env_config.get_reranker_enabled()
+            after_reranker = None
+            if reranker_used and formatted_results:
                 reranked_results = self._apply_reranker(query, formatted_results)
                 if env_config.get_logging_verbose():
                     logger.info(f"[SEARCHER] Reranker: {len(formatted_results)} -> {len(reranked_results)} results")
                 formatted_results = reranked_results
-            
+                after_reranker = len(formatted_results)
+
             # Step 3: Apply AI filtering if available
-            if self.ai_filter and formatted_results:
+            ai_filter_used = bool(self.ai_filter)
+            after_ai_filter = None
+            if ai_filter_used and formatted_results:
                 if env_config.get_logging_verbose():
                     logger.info(f"[SEARCHER] Applying AI filter to {len(formatted_results)} results")
-                
+
                 filtered_results = self.ai_filter.filter_search_results(
-                    query, 
+                    query,
                     formatted_results,
                     return_all_with_scores=False
                 )
-                
+
                 if env_config.get_logging_verbose():
                     logger.info(f"[SEARCHER] AI filter returned {len(filtered_results)} results")
-                
+
                 formatted_results = filtered_results
-            
+                after_ai_filter = len(formatted_results)
+
             # Step 4: Limit to max_results
             if len(formatted_results) > max_results:
                 formatted_results = formatted_results[:max_results]
                 if env_config.get_logging_verbose():
                     logger.info(f"[SEARCHER] Limited to top {max_results} results")
-            
+
+            self.last_search_stats = {
+                'semantic_n': semantic_n,
+                'after_semantic': after_semantic,
+                'reranker_used': reranker_used,
+                'reranker_threshold': env_config.get_reranker_threshold() if reranker_used else None,
+                'after_reranker': after_reranker,
+                'ai_filter_used': ai_filter_used,
+                'after_ai_filter': after_ai_filter,
+                'max_results': max_results,
+                'returned': len(formatted_results),
+            }
             return formatted_results
             
         except Exception as e:

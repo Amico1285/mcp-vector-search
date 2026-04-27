@@ -25,7 +25,9 @@
 
         "PREVIEW_LINES_VECTORIZATION": "-1",
         "PREVIEW_LINES_STORAGE": "-1",
-        "PREVIEW_LINES_OUTPUT": "80"
+
+        "_PREVIEW_CHARS_OUTPUT_DOC": "0 = paths + scores only (agentic flow); N = first N chars per file; -1 = full file",
+        "PREVIEW_CHARS_OUTPUT": "0"
       }
     }
   }

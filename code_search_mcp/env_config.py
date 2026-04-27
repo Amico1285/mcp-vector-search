@@ -60,7 +60,7 @@ ENV_PREVIEW_LINES_VECTORIZATION = 'PREVIEW_LINES_VECTORIZATION'
 ENV_PREVIEW_LINES_STORAGE = 'PREVIEW_LINES_STORAGE'
 ENV_PREVIEW_LINES_RERANKER = 'PREVIEW_LINES_RERANKER'
 ENV_PREVIEW_LINES_AI_FILTER = 'PREVIEW_LINES_AI_FILTER'
-ENV_PREVIEW_LINES_OUTPUT = 'PREVIEW_LINES_OUTPUT'
+ENV_PREVIEW_CHARS_OUTPUT = 'PREVIEW_CHARS_OUTPUT'
 ENV_DB_NAME = 'DB_NAME'
 
 # Hybrid Search Environment Variables
@@ -106,7 +106,7 @@ DEFAULTS = {
     ENV_PREVIEW_LINES_STORAGE: -1,
     ENV_PREVIEW_LINES_RERANKER: 100,  # Increased to utilize 32K context of rerank-2.5
     ENV_PREVIEW_LINES_AI_FILTER: 40,
-    ENV_PREVIEW_LINES_OUTPUT: 80,
+    ENV_PREVIEW_CHARS_OUTPUT: 0,  # 0 = paths + scores only; N = first N chars; -1 = whole file
     ENV_DB_NAME: 'codebase_files',
     # Hybrid Search defaults
     ENV_HYBRID_SEARCH_ENABLED: False,
@@ -299,9 +299,15 @@ def get_preview_lines_ai_filter() -> int:
     return get_int_env(ENV_PREVIEW_LINES_AI_FILTER, DEFAULTS[ENV_PREVIEW_LINES_AI_FILTER])
 
 
-def get_preview_lines_output() -> int:
-    """Get number of lines for output."""
-    return get_int_env(ENV_PREVIEW_LINES_OUTPUT, DEFAULTS[ENV_PREVIEW_LINES_OUTPUT])
+def get_preview_chars_output() -> int:
+    """Get how many characters of file content to include per result.
+
+    Values:
+      0  -> paths and scores only (agentic flow: agent reads files via Read/Grep/Glob)
+      N  -> include the first N characters of each file as a snippet
+      -1 -> include the entire file content
+    """
+    return get_int_env(ENV_PREVIEW_CHARS_OUTPUT, DEFAULTS[ENV_PREVIEW_CHARS_OUTPUT])
 
 
 def get_db_name() -> str:

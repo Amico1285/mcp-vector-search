@@ -234,7 +234,7 @@ Edit the `.mcp.json` file to add your configuration. Choose one of the embedding
         "PREVIEW_LINES_STORAGE": "-1",
         "PREVIEW_LINES_RERANKER": "-1",
         "PREVIEW_LINES_AI_FILTER": "-1",
-        "PREVIEW_LINES_OUTPUT": "80"
+        "PREVIEW_CHARS_OUTPUT": "0"
       }
     }
   }
@@ -271,7 +271,7 @@ Edit the `.mcp.json` file to add your configuration. Choose one of the embedding
         "PREVIEW_LINES_VECTORIZATION": "-1",
         "PREVIEW_LINES_STORAGE": "-1",
         "PREVIEW_LINES_AI_FILTER": "-1",
-        "PREVIEW_LINES_OUTPUT": "80"
+        "PREVIEW_CHARS_OUTPUT": "0"
       }
     }
   }
@@ -308,7 +308,7 @@ Edit the `.mcp.json` file to add your configuration. Choose one of the embedding
         "PREVIEW_LINES_VECTORIZATION": "-1",
         "PREVIEW_LINES_STORAGE": "-1",
         "PREVIEW_LINES_AI_FILTER": "-1",
-        "PREVIEW_LINES_OUTPUT": "80"
+        "PREVIEW_CHARS_OUTPUT": "0"
       }
     }
   }
@@ -446,7 +446,7 @@ Controls how many lines of code are used at each stage of the search pipeline:
 | `PREVIEW_LINES_STORAGE` | Lines stored in database | -1 | How much code to save per file. -1 = entire file (recommended) |
 | `PREVIEW_LINES_RERANKER` | Lines sent to VoyageAI reranker | 100 | Code context for relevance scoring. Balance between accuracy and speed. -1 = entire file |
 | `PREVIEW_LINES_AI_FILTER` | Lines sent to Claude for filtering | 40 | Code context for AI relevance evaluation. More lines = better judgment. -1 = entire file |
-| `PREVIEW_LINES_OUTPUT` | Lines shown in search results | 80 | How much code you see in the final output. -1 = entire file |
+| `PREVIEW_CHARS_OUTPUT` | Per-file content shown in search results | 0 | `0` = paths and scores only (agent reads files via Read/Grep/Glob); `N` = first N characters; `-1` = entire file |
 
 All settings are configured via environment variables in your MCP server configuration.
 
