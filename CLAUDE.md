@@ -55,6 +55,27 @@ stand-alone to confirm the FastMCP banner:
 mcp-vector-search
 ```
 
+## Picking a configuration for a new corpus
+
+When wiring this MCP into a new project, **don't reach for the first Voyage Quick
+Start block by default.** Different corpora benefit from very different settings.
+Pick the closest match below and read the full preset (including reasoning) in
+[README.md → Recommended Configurations](README.md#recommended-configurations).
+
+| Corpus type | Embedding model | Chunking | Reranker | `PREVIEW_CHARS_OUTPUT` |
+|---|---|---|---|---|
+| Markdown docs / knowledge base | `voyage-context-3` | yes, 64 tokens | on | 200 |
+| Source code / mixed monorepo | `voyage-3-large` (dim 1024) | off | on | 0 |
+| Local / privacy-sensitive | Ollama `snowflake-arctic-embed2` | (default) | off | 100 |
+| Cheap/fast cloud | OpenAI `text-embedding-3-large` | off | off, but `AI_FILTER_ENABLED=true` | 0 |
+
+Two rules of thumb that the table encodes:
+
+- **Long-form prose retrieves better with small contextualised chunks** — that's why docs use `voyage-context-3` + 64-token chunks instead of whole-file embeddings.
+- **`PREVIEW_CHARS_OUTPUT` is a UX choice, not a quality choice.** If the agent will mostly inspect files via `Read`/`Grep`/`Glob` (typical for code), keep it 0. If the agent will skim a list and pick one (typical for docs), 100–200 chars saves an extra `Read` per query.
+
+If unsure, copy the matching preset from `README.md` and tune from there.
+
 ## Smoke-testing changes
 
 Point the server at any directory of code or docs you have nearby:

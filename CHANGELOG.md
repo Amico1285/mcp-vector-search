@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2 — 2026-04-27
+
+### Documentation
+- Added a "Recommended Configurations" section to `README.md` with four copy-paste-ready presets (documentation / code / local / cheap-cloud) and the reasoning behind each. Without these, models setting up the MCP for a new project tend to copy the first Voyage Quick Start block whether it fits the corpus or not.
+- Added a corresponding decision table to `CLAUDE.md` so Claude Code agents working in this repo are nudged to pick a config that matches the corpus type instead of inventing one from scratch.
+
+No code changes.
+
 ## 0.4.1 — 2026-04-27
 
 ### Documentation

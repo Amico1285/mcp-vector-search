@@ -473,6 +473,93 @@ Controls how many lines of code are used at each stage of the search pipeline:
 
 All settings are configured via environment variables in your MCP server configuration.
 
+## Recommended Configurations
+
+The right embedding model and chunking strategy depend on the kind of corpus you're indexing. The four presets below are sensible starting points; tune from there with your own measurements. Every preset assumes you've also set `CODEBASE_PATH` and `DB_NAME`.
+
+### Documentation / knowledge base (markdown, prose)
+
+Best for: product docs, runbooks, user guides, mostly-prose corpora.
+
+```json
+"EMBEDDING_PROVIDER": "voyage",
+"VOYAGE_API_KEY": "...",
+"VOYAGE_EMBEDDING_MODEL": "voyage-context-3",
+"VOYAGE_ENABLE_CHUNKING": "true",
+"VOYAGE_MAX_CHUNK_TOKENS": "64",
+
+"SEMANTIC_SEARCH_N_RESULTS": "30",
+"RERANKER_ENABLED": "true",
+"RERANKER_THRESHOLD": "0.5",
+"AI_FILTER_ENABLED": "false",
+"MAX_RESULTS": "10",
+
+"PREVIEW_CHARS_OUTPUT": "200"
+```
+
+`voyage-context-3` produces *contextualised* chunk embeddings — each chunk vector encodes its surrounding chunks, not just the chunk text in isolation. With small chunks (~64 tokens), this gives accurate retrieval on long documents. `PREVIEW_CHARS_OUTPUT=200` shows the agent the first ~200 characters of each candidate so it can confirm relevance without an extra `Read`.
+
+### Code search (mixed code + docs)
+
+Best for: source-code repositories and monorepos, where exact file paths matter more than long paragraphs.
+
+```json
+"EMBEDDING_PROVIDER": "voyage",
+"VOYAGE_API_KEY": "...",
+"VOYAGE_EMBEDDING_MODEL": "voyage-3-large",
+"VOYAGE_OUTPUT_DIMENSION": "1024",
+"VOYAGE_ENABLE_CHUNKING": "false",
+
+"SEMANTIC_SEARCH_N_RESULTS": "20",
+"RERANKER_ENABLED": "true",
+"RERANKER_THRESHOLD": "0.5",
+"AI_FILTER_ENABLED": "false",
+"MAX_RESULTS": "10",
+
+"PREVIEW_CHARS_OUTPUT": "0"
+```
+
+`voyage-3-large` is general-purpose and embeds each file whole (no chunking). `PREVIEW_CHARS_OUTPUT=0` returns just paths and scores — the agent then opens the most relevant files with `Read`/`Grep`/`Glob`. This keeps token cost low on large codebases.
+
+### Local / privacy-sensitive
+
+Best for: corpora that can't leave the machine. No cloud API calls.
+
+```json
+"EMBEDDING_PROVIDER": "ollama",
+"OLLAMA_BASE_URL": "http://localhost:11434",
+"OLLAMA_EMBEDDING_MODEL": "snowflake-arctic-embed2",
+
+"SEMANTIC_SEARCH_N_RESULTS": "20",
+"RERANKER_ENABLED": "false",
+"AI_FILTER_ENABLED": "false",
+"MAX_RESULTS": "10",
+
+"PREVIEW_CHARS_OUTPUT": "100"
+```
+
+The Voyage reranker requires API access, so it's off here. Search quality depends heavily on the Ollama model — `snowflake-arctic-embed2` is a solid baseline; see [OLLAMA_SETUP.md](OLLAMA_SETUP.md) for alternatives.
+
+### Cheap / fast cloud (no reranker)
+
+Best for: quick prototyping, very large corpora, or environments already on the OpenAI stack.
+
+```json
+"EMBEDDING_PROVIDER": "openai",
+"OPENAI_API_KEY": "sk-...",
+"OPENAI_EMBEDDING_MODEL": "text-embedding-3-large",
+
+"SEMANTIC_SEARCH_N_RESULTS": "20",
+"RERANKER_ENABLED": "false",
+"AI_FILTER_ENABLED": "true",
+"AI_FILTER_MODEL": "claude-sonnet-4-20250514",
+"MAX_RESULTS": "10",
+
+"PREVIEW_CHARS_OUTPUT": "0"
+```
+
+OpenAI has no built-in reranker, so `AI_FILTER_ENABLED=true` brings Claude in to filter relevance after vector search. Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) on `PATH`.
+
 ## Advanced Usage
 
 ### Use Cases
