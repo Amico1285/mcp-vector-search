@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "mcp-vector-search",
+      "env": {
+        "CODEBASE_PATH": "/absolute/path/to/your/codebase",
+        "DB_NAME": "my_codebase",
+
+        "EMBEDDING_PROVIDER": "voyage",
+
+        "VOYAGE_API_KEY": "YOUR_VOYAGE_API_KEY_HERE",
+        "VOYAGE_EMBEDDING_MODEL": "voyage-3-large",
+
+        "_OPENAI_API_KEY": "YOUR_OPENAI_API_KEY_HERE (uncomment if EMBEDDING_PROVIDER=openai)",
+        "_OPENAI_EMBEDDING_MODEL": "text-embedding-3-large",
+
+        "_OLLAMA_BASE_URL": "http://localhost:11434 (uncomment if EMBEDDING_PROVIDER=ollama)",
+        "_OLLAMA_EMBEDDING_MODEL": "snowflake-arctic-embed2",
+
+        "SEMANTIC_SEARCH_N_RESULTS": "20",
+        "MAX_RESULTS": "10",
+        "RERANKER_ENABLED": "true",
+        "RERANKER_THRESHOLD": "0.5",
+        "AI_FILTER_ENABLED": "false",
+
+        "PREVIEW_LINES_VECTORIZATION": "-1",
+        "PREVIEW_LINES_STORAGE": "-1",
+        "PREVIEW_LINES_OUTPUT": "80"
+      }
+    }
+  }
+}

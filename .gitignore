@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# ChromaDB databases
+DBs/
+
+# Logs
+Logs/
+*.log
+
+# Status files (created at runtime)
+status/
+
+# Local MCP configuration (use .mcp.json.example as a template)
+.mcp.json
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
