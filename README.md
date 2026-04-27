@@ -171,10 +171,16 @@ pip install -e ".[all]"
 ### Verify
 
 ```bash
-mcp-vector-search --help 2>/dev/null || python -m code_search_mcp
+mcp-vector-search
 ```
 
 You should see the FastMCP startup banner. Press `Ctrl+C` to stop.
+
+If `mcp-vector-search` isn't on your `PATH` (typical when installed inside a virtualenv that isn't activated), you can run the package as a module instead — same result:
+
+```bash
+python -m code_search_mcp
+```
 
 ## Quick Start with Claude Code
 
@@ -253,24 +259,25 @@ Edit the `.mcp.json` file to add your configuration. Choose one of the embedding
         "EMBEDDING_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-...",
         "OPENAI_EMBEDDING_MODEL": "text-embedding-3-large",
-        "ENABLE_CHUNKING": "true",
-        "MAX_CHUNK_TOKENS": "1024",
 
         "SEMANTIC_SEARCH_N_RESULTS": "20",
-        
+
+        "RERANKER_ENABLED": "false",
+
         "AI_FILTER_ENABLED": "true",
         "AI_FILTER_MODEL": "claude-sonnet-4-20250514",
         "AI_FILTER_TIMEOUT_SECONDS": "120",
-        
+
         "MAX_RESULTS": "10",
-        
+
         "LOGGING_VERBOSE": "false",
         "LOGGING_FILE_ENABLED": "false",
         "LOGGING_FILE_PATH": "Logs/search_operations.log",
-        
+
         "PREVIEW_LINES_VECTORIZATION": "-1",
         "PREVIEW_LINES_STORAGE": "-1",
-        "PREVIEW_LINES_AI_FILTER": "-1",
+        "PREVIEW_LINES_RERANKER": "100",
+        "PREVIEW_LINES_AI_FILTER": "40",
         "PREVIEW_CHARS_OUTPUT": "0"
       }
     }
@@ -290,24 +297,24 @@ Edit the `.mcp.json` file to add your configuration. Choose one of the embedding
         "EMBEDDING_PROVIDER": "ollama",
         "OLLAMA_BASE_URL": "http://localhost:11434",
         "OLLAMA_EMBEDDING_MODEL": "snowflake-arctic-embed2",
-        "ENABLE_CHUNKING": "true",
-        "MAX_CHUNK_TOKENS": "128",
-        
+
         "SEMANTIC_SEARCH_N_RESULTS": "20",
-        
+
+        "RERANKER_ENABLED": "false",
+
         "AI_FILTER_ENABLED": "true",
         "AI_FILTER_MODEL": "claude-sonnet-4-20250514",
         "AI_FILTER_TIMEOUT_SECONDS": "120",
-        
+
         "MAX_RESULTS": "10",
-        
+
         "LOGGING_VERBOSE": "false",
         "LOGGING_FILE_ENABLED": "false",
         "LOGGING_FILE_PATH": "Logs/search_operations.log",
-        
+
         "PREVIEW_LINES_VECTORIZATION": "-1",
         "PREVIEW_LINES_STORAGE": "-1",
-        "PREVIEW_LINES_AI_FILTER": "-1",
+        "PREVIEW_LINES_AI_FILTER": "40",
         "PREVIEW_CHARS_OUTPUT": "0"
       }
     }
@@ -378,10 +385,13 @@ claude --continue
 ### Required Variables
 | Variable | Description | Default |
 |----------|-------------|----------|
-| `CODEBASE_PATH` | Path to the codebase to index | (required) |
-| `EMBEDDING_PROVIDER` | Embedding provider to use | voyage |
+| `CODEBASE_PATH` | Absolute path to the codebase to index | (required) |
+| `EMBEDDING_PROVIDER` | Embedding provider: `voyage`, `openai`, or `ollama` | voyage |
+| `DB_NAME` | ChromaDB collection name. Use a unique value per indexed codebase to keep multiple projects separate. | codebase_files |
 
 ### Embedding Provider Settings
+
+Only the variables for your selected `EMBEDDING_PROVIDER` are read; the others are ignored.
 
 #### VoyageAI (Cloud)
 | Variable | Description | Default |
@@ -399,7 +409,6 @@ claude --continue
 |----------|-------------|----------|
 | `OPENAI_API_KEY` | Your OpenAI API key | (required) |
 | `OPENAI_EMBEDDING_MODEL` | OpenAI model for embeddings | text-embedding-3-large |
-| `OPENAI_EMBEDDING_DIMENSIONS` | Optional dimension reduction | (model default) |
 | `OPENAI_BATCH_SIZE` | Batch size for OpenAI API requests | 2048 |
 
 #### Ollama (Local)
@@ -408,26 +417,40 @@ claude --continue
 | `OLLAMA_BASE_URL` | Ollama server URL | http://localhost:11434 |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama model name | snowflake-arctic-embed2 |
 
-### Chunking Settings (Universal)
-| Variable | Description | Default |
-|----------|-------------|----------|
-| `ENABLE_CHUNKING` | Enable automatic file chunking for large files | true |
-| `MAX_CHUNK_TOKENS` | Maximum tokens per chunk | Model-specific |
-| `MIN_CHUNK_TOKENS` | Minimum tokens per chunk | Model-specific |
-| `CHUNK_OVERLAP_TOKENS` | Number of overlapping tokens between chunks | Model-specific |
-
 ### Search Pipeline Settings
 | Variable | Description | Default |
 |----------|-------------|----------|
 | `SEMANTIC_SEARCH_N_RESULTS` | Initial candidates from vector search | 20 |
-| `RERANKER_ENABLED` | Enable VoyageAI reranker | true |
-| `RERANKER_THRESHOLD` | Minimum relevance score | 0.5 |
+| `RERANKER_ENABLED` | Enable VoyageAI reranker (Voyage provider only) | true |
+| `RERANKER_THRESHOLD` | Minimum relevance score; files below are filtered out | 0.5 |
 | `RERANKER_MODEL` | Reranker model name | rerank-2.5 |
-| `RERANKER_INSTRUCTIONS` | Custom instructions for reranker to improve relevance | (empty) |
+| `RERANKER_INSTRUCTIONS` | Custom instructions sent to the reranker to bias relevance | (empty) |
+| `RERANKER_USE_CHUNKS` | Send chunk text to the reranker instead of full file content | false |
 | `AI_FILTER_ENABLED` | Enable Claude CLI filtering | true |
-| `AI_FILTER_MODEL` | Claude model for filtering | claude-sonnet-4-20250514 |
-| `AI_FILTER_TIMEOUT_SECONDS` | Timeout for Claude CLI | 120 |
-| `MAX_RESULTS` | Maximum results returned | 10 |
+| `AI_FILTER_MODEL` | Claude model used for filtering | claude-sonnet-4-20250514 |
+| `AI_FILTER_TIMEOUT_SECONDS` | Timeout for the Claude CLI call | 120 |
+| `MAX_RESULTS` | Maximum results returned by `search_files` | 10 |
+
+### Hybrid Search (BM25 + Vector + RRF)
+
+Disabled by default. Set `HYBRID_SEARCH_ENABLED=true` to combine BM25 keyword matching with semantic search using Reciprocal Rank Fusion. Useful when literal token matches matter (function names, error strings, exact phrases).
+
+| Variable | Description | Default |
+|----------|-------------|----------|
+| `HYBRID_SEARCH_ENABLED` | Enable BM25 + vector + RRF pipeline | false |
+| `BM25_ONLY_MODE` | Skip vector search and use only BM25 | false |
+| `RRF_K_PARAMETER` | RRF k constant (1–1000) | 60 |
+| `RRF_WEIGHTS_ENABLED` | Use weighted RRF instead of standard RRF | false |
+| `RRF_VECTOR_WEIGHT` | Weight for vector results (0–1; pair must sum to ~1) | 0.6 |
+| `RRF_BM25_WEIGHT` | Weight for BM25 results (0–1; pair must sum to ~1) | 0.4 |
+| `BM25_K1_PARAMETER` | BM25 term-frequency saturation (0.1–3.0) | 1.2 |
+| `BM25_B_PARAMETER` | BM25 length normalisation (0–1) | 0.75 |
+| `BM25_N_RESULTS` | Top BM25 candidates passed to RRF | 20 |
+| `BM25_MIN_TOKEN_LENGTH` | Minimum token length when indexing | 2 |
+| `BM25_REMOVE_STOPWORDS` | Remove stopwords during indexing/search | true |
+| `BM25_LANGUAGE` | Language for stemming and stopwords | english |
+| `BM25_USE_STEMMING` | Apply stemming when tokenising | false |
+| `BM25_USE_CHUNKING` | Index chunks (instead of full files) for BM25 | false |
 
 ### Logging Settings
 | Variable | Description | Default |

@@ -133,7 +133,7 @@ For optimal performance with local models:
     "AI_FILTER_MODEL": "claude-sonnet-4-20250514",
     
     "PREVIEW_LINES_VECTORIZATION": "50",
-    "PREVIEW_LINES_OUTPUT": "100"
+    "PREVIEW_CHARS_OUTPUT": "0"
   }
 }
 ```

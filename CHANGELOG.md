@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-04-27
+
+### Documentation
+- Removed phantom environment variables from `README.md` and `OLLAMA_SETUP.md` that were never read by the server: `ENABLE_CHUNKING`, `MAX_CHUNK_TOKENS`, `MIN_CHUNK_TOKENS`, `CHUNK_OVERLAP_TOKENS`, `OPENAI_EMBEDDING_DIMENSIONS`. The OpenAI/Ollama Quick Start examples no longer set settings the code silently ignores. Voyage chunking is documented under the `VOYAGE_*` prefixed variables that actually exist.
+- Replaced the last leftover `PREVIEW_LINES_OUTPUT` (`OLLAMA_SETUP.md`) with `PREVIEW_CHARS_OUTPUT`.
+- Documented previously hidden variables: `DB_NAME`, `RERANKER_USE_CHUNKS`, the full Hybrid Search suite (`HYBRID_SEARCH_ENABLED`, `BM25_*`, `RRF_*`).
+- Made the three Quick Start config blocks (Voyage / OpenAI / Ollama) symmetric in the variables they set.
+- Verify section now leads with the installed binary and shows the module-form invocation as an explicit fallback when the binary isn't on `PATH`.
+
+No code changes.
+
 ## 0.4.0 — 2026-04-27
 
 ### New
