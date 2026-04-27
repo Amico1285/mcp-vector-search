@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 — 2026-04-27
+
+### New
+- `update_db(wait: bool = False)` — pass `wait=True` to block until indexing finishes (with a 600s timeout) and get the full report back in one call. Removes the need to poll `get_server_info()` from agentic flows.
+
+### Fixed
+- `reset_db()` now preserves the saved configuration (file extensions, excludes) by reading it from the existing collection metadata and recreating an empty collection with the same config. Previously the docstring claimed `update_db()` could be called right after, but it would fail with "Collection does not exist" — you had to call `set_config()` again. Now the documented one-step recovery actually works:
+  ```
+  reset_db()
+  update_db(wait=True)
+  ```
+- `reset_db()` docstring rewritten to describe the new behaviour and to make explicit that `set_config()` is only required if no prior configuration exists.
+
 ## 0.2.0 — 2026-04-27
 
 ### New

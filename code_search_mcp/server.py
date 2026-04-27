@@ -420,31 +420,37 @@ def _run_update_in_background(codebase_path: str, analyze_project: bool):
 
 
 @app.tool()
-def update_db() -> str:
+def update_db(wait: bool = False) -> str:
     """
     Update vector database using the existing configuration.
-    
+
     This will vectorize files according to the configuration created by set_config().
     If no configuration exists, you must first run set_config() to create one.
-    
+
     The update process:
     - For new databases: Performs full vectorization of all matching files
     - For existing databases: Performs incremental updates (only changed files)
     - Automatically removes files that no longer match configuration
     - Preserves chunks and embeddings for unchanged files
-    
+
+    Args:
+        wait: If True, block until indexing completes (or hits a 600s timeout)
+              and return the final report. If False (default), returns
+              immediately and indexing continues in the background; use
+              get_server_info() to monitor progress.
+
     Before running this, use set_config() to:
     - Analyze your project structure
     - Configure which files to index
     - Preview what will be vectorized
-    
+
     Examples:
         # First time setup:
-        set_config(analyze=True)  # Analyze and create configuration
-        update_db()               # Vectorize files
-        
-        # Incremental updates:
-        update_db()  # Only updates changed files
+        set_config(analyze=True)
+        update_db(wait=True)      # block until done
+
+        # Fire-and-forget incremental refresh:
+        update_db()                # returns immediately, runs in background
     """
     try:
         codebase_path = os.getenv('CODEBASE_PATH')
@@ -504,11 +510,37 @@ Try creating a new configuration:
             daemon=True
         )
         thread.start()
-        
-        return """✓ Database update started in background
 
-Use get_server_info() to check progress.
-The update will continue even if this conversation ends."""
+        if not wait:
+            return (
+                "✓ Database update started in background\n\n"
+                "Use get_server_info() to check progress, or call update_db(wait=True) "
+                "to block until completion. The update will continue even if this conversation ends."
+            )
+
+        # Blocking mode: poll status file until completed/error or timeout
+        import time
+        timeout_seconds = 600
+        poll_interval = 2.0
+        start_time = time.time()
+        while time.time() - start_time < timeout_seconds:
+            if status_path.exists():
+                try:
+                    with open(status_path, 'r') as f:
+                        status = json.load(f)
+                except Exception:
+                    status = None
+                if isinstance(status, dict):
+                    current = status.get('status')
+                    if current == 'completed':
+                        return f"✓ Database update completed\n\n{status.get('message', '')}"
+                    if current == 'error':
+                        return f"✗ Database update failed\n\n{status.get('message', 'unknown error')}"
+            time.sleep(poll_interval)
+        return (
+            f"⚠ Update did not finish within {timeout_seconds}s. "
+            "It is still running in the background — use get_server_info() to monitor."
+        )
         
     except Exception as e:
         return f"Error starting database update: {str(e)}"
@@ -517,22 +549,28 @@ The update will continue even if this conversation ends."""
 @app.tool()
 def reset_db() -> str:
     """
-    Reset the vector database by removing all stored embeddings and metadata.
-    
-    WARNING: This will delete all indexed data. You will need to run update_db() 
-    to re-index your codebase after resetting.
-    
+    Reset the vector database by removing all stored embeddings.
+
+    The previously saved configuration (file extensions, excluded dirs/patterns)
+    is preserved: an empty collection is recreated with the same config so the
+    next call to update_db() can immediately re-index without needing
+    set_config() again.
+
     Use this when:
     - Changing embedding model (VOYAGE_EMBEDDING_MODEL)
     - Changing vectorization settings (PREVIEW_LINES_VECTORIZATION)
     - Database is corrupted or inconsistent
     - Testing different configurations
-    
+
+    If no configuration was saved (e.g. brand-new database), you'll need to
+    call set_config() before update_db().
+
     Returns:
-        Confirmation message or error
-    
+        Confirmation message describing whether the config was preserved.
+
     Examples:
-        reset_db()  # Reset the database
+        reset_db()
+        update_db()      # ready to go — config is preserved
     """
     try:
         # Check if update is currently running
@@ -564,10 +602,24 @@ def reset_db() -> str:
         # Complete cleanup of ChromaDB
         import chromadb
         import shutil
-        
+
         # Ensure directory exists
         db_path.mkdir(parents=True, exist_ok=True)
-        
+
+        # Step 1: capture saved config from the existing collection (if any)
+        saved_config_str = None
+        try:
+            probe_client = chromadb.PersistentClient(path=str(db_path))
+            existing = probe_client.get_collection(name=db_name)
+            existing_meta = existing.metadata or {}
+            cfg = existing_meta.get('config')
+            if cfg:
+                saved_config_str = cfg if isinstance(cfg, str) else json.dumps(cfg)
+                if env_config.get_logging_verbose():
+                    logger.info("[RESET_DB] Preserved configuration from existing collection")
+        except Exception:
+            saved_config_str = None
+
         try:
             # Use ChromaDB API to cleanly delete collection
             client = chromadb.PersistentClient(path=str(db_path))
@@ -625,17 +677,42 @@ def reset_db() -> str:
         if status_files_cleared > 0 and env_config.get_logging_verbose():
             logger.info(f"[RESET_DB] Cleared {status_files_cleared} status files")
         
+        # Recreate empty collection with preserved config so update_db() works immediately
+        config_preserved = False
+        if saved_config_str:
+            try:
+                client = chromadb.PersistentClient(path=str(db_path))
+                client.create_collection(
+                    name=db_name,
+                    metadata={
+                        'config': saved_config_str,
+                        'vectorized': 'false',
+                        'hnsw:space': 'cosine',
+                    }
+                )
+                config_preserved = True
+                if env_config.get_logging_verbose():
+                    logger.info("[RESET_DB] Recreated empty collection with preserved config")
+            except Exception as e:
+                if env_config.get_logging_verbose():
+                    logger.warning(f"[RESET_DB] Could not recreate collection with saved config: {e}")
+
         # Clear the global searcher instance
         global _searcher
         _searcher = None
-        
+
         if env_config.get_logging_verbose():
             logger.info("[RESET_DB] Reset operation completed successfully")
-        
-        return """✓ Database reset complete
 
-All indexed data has been cleared.
-Run update_db() to re-index your codebase."""
+        if config_preserved:
+            return (
+                "✓ Database reset complete\n\n"
+                "Configuration preserved. Run update_db() to re-index."
+            )
+        return (
+            "✓ Database reset complete\n\n"
+            "No saved configuration found. Run set_config(...) and then update_db()."
+        )
         
     except Exception as e:
         error_msg = f"Error resetting database: {str(e)}"
