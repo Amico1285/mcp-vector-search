@@ -65,6 +65,10 @@ def _pipeline_budget_line(stats: dict) -> str:
     if not stats:
         return ""
     parts = [f"SEMANTIC_SEARCH_N_RESULTS={stats['semantic_n']} -> {stats['after_semantic']} candidates"]
+    if stats.get('path_prefix'):
+        parts.append(
+            f"path_prefix='{stats['path_prefix']}' kept {stats['after_path_filter']}"
+        )
     if stats['reranker_used']:
         parts.append(
             f"reranker (threshold {stats['reranker_threshold']:.2f}) kept {stats['after_reranker']}"
@@ -97,7 +101,7 @@ def _truncate_chars(content: str, max_chars: int) -> str:
 
 
 @app.tool()
-def search_files(query: str) -> str:
+def search_files(query: str, path_prefix: Optional[str] = None) -> str:
     """
     Semantic file search. Search through codebase files using natural language queries.
 
@@ -109,14 +113,25 @@ def search_files(query: str) -> str:
       - -1 -> entire file
 
     Args:
-        query: Search query (e.g., "button component", "theme configuration")
+        query: Search query (e.g., "button component", "theme configuration").
+        path_prefix: Optional. Restricts results to files inside the given
+            relative subtree of the indexed codebase (e.g. "frontend" or
+            "src/auth"). Default is None — search the whole codebase, which
+            is almost always what you want. Only set this when the user has
+            explicitly named a sub-area to search in, or when the codebase
+            is known to contain independent sub-projects and the question
+            clearly belongs to one of them. Using it speculatively will hide
+            relevant matches that live elsewhere; if results feel scoped,
+            re-run without path_prefix to compare. Path traversal (".." segments)
+            is rejected.
 
     Examples:
         search_files("button dropdown component")
+        search_files("oauth callback handler", path_prefix="services/auth")
     """
     try:
         searcher = get_searcher()
-        results = searcher.search(query)
+        results = searcher.search(query, path_prefix=path_prefix)
         stats = getattr(searcher, 'last_search_stats', None)
 
         if not results:

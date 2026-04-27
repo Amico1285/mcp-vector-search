@@ -102,33 +102,51 @@ class CodebaseSearcher:
         """Generate embeddings for a list of texts."""
         return self.embedding_provider.embed_documents(texts)
     
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    def search(self, query: str, path_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for files matching the query.
-        
+
         Pipeline:
         1. Semantic search for initial results
-        2. VoyageAI reranker (if enabled)
-        3. AI filtering (if enabled)
-        4. Return top K results
-        
+        2. Optional path_prefix filter
+        3. VoyageAI reranker (if enabled)
+        4. AI filtering (if enabled)
+        5. Return top K results
+
         Args:
             query: Search query
-            
+            path_prefix: Optional. If set, restricts results to files inside the
+                given subtree (relative to CODEBASE_PATH). Path traversal
+                (".." segments) is rejected.
+
         Returns:
             List of search results with file path and preview
         """
-        
+
         try:
             # Use environment values
             semantic_n = env_config.get_semantic_search_n_results()
             max_results = env_config.get_max_results()
 
+            # Resolve path_prefix into a safe absolute prefix (None if no filter).
+            resolved_prefix = None
+            if path_prefix:
+                base = Path(self.codebase_path).resolve()
+                candidate = (base / path_prefix).resolve()
+                try:
+                    candidate.relative_to(base)
+                except ValueError:
+                    if env_config.get_logging_verbose():
+                        logger.warning(f"[SEARCHER] path_prefix '{path_prefix}' escapes CODEBASE_PATH, ignoring")
+                else:
+                    resolved_prefix = str(candidate)
+
             if env_config.get_logging_verbose():
                 logger.info(f"[SEARCHER] Starting search for: '{query}'")
                 logger.info(f"[SEARCHER] Config: semantic_n={semantic_n}, max_results={max_results}, " +
                            f"reranker={env_config.get_reranker_enabled()}, " +
-                           f"ai_filter={env_config.get_ai_filter_enabled()}")
+                           f"ai_filter={env_config.get_ai_filter_enabled()}, " +
+                           f"path_prefix={resolved_prefix or '-'}")
             
             # Generate query embedding
             query_embedding = self.embedding_provider.embed_query(query)
@@ -270,6 +288,18 @@ class CodebaseSearcher:
             if env_config.get_logging_verbose():
                 logger.info(f"[SEARCHER] Semantic search found {after_semantic} results")
 
+            # Step 2a: Apply path_prefix filter if requested
+            after_path_filter = None
+            if resolved_prefix is not None:
+                sep = os.sep
+                formatted_results = [
+                    r for r in formatted_results
+                    if r['path'] == resolved_prefix or r['path'].startswith(resolved_prefix + sep)
+                ]
+                after_path_filter = len(formatted_results)
+                if env_config.get_logging_verbose():
+                    logger.info(f"[SEARCHER] Path filter '{path_prefix}': {after_semantic} -> {after_path_filter}")
+
             # Step 2: Apply reranker if enabled
             reranker_used = env_config.get_reranker_enabled()
             after_reranker = None
@@ -308,6 +338,8 @@ class CodebaseSearcher:
             self.last_search_stats = {
                 'semantic_n': semantic_n,
                 'after_semantic': after_semantic,
+                'path_prefix': path_prefix if resolved_prefix is not None else None,
+                'after_path_filter': after_path_filter,
                 'reranker_used': reranker_used,
                 'reranker_threshold': env_config.get_reranker_threshold() if reranker_used else None,
                 'after_reranker': after_reranker,

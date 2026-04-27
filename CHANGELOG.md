@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 — 2026-04-27
+
+### New
+- `search_files(query, path_prefix=...)` — optional second argument restricts results to files inside a given relative subtree of the indexed codebase (e.g. `path_prefix="frontend"` or `path_prefix="src/auth"`). Useful when one database covers multiple sub-projects and the question clearly belongs to one of them. Default is `None` — search everywhere, which is what you almost always want; the docstring explicitly tells the model not to set it speculatively. Path traversal (`..`) is rejected.
+- The `Pipeline:` budget header now includes a `path_prefix='X' kept N` segment when the filter is applied, so the agent can see how aggressive the scope was.
+
+### Internal
+- `searcher.search()` accepts a `path_prefix` keyword argument and applies the filter between vector search and reranker (skips reranker work on excluded files). `last_search_stats` now records `path_prefix` and `after_path_filter`.
+
 ## 0.3.0 — 2026-04-27
 
 ### New
