@@ -276,10 +276,16 @@ class ProjectAnalyzer:
         if file_path.suffix not in config['extensions']:
             return False
         
-        # Check exclude directories - only check in path parts, not in filename
-        path_parts = file_path.parts[:-1]  # Exclude the filename itself
-        for exclude_dir in config['exclude_dirs']:
-            if any(exclude_dir in part or part == exclude_dir for part in path_parts):
+        # Check exclude directories — exact path SEGMENTS relative to the codebase
+        # root (a substring match would also hit the base-directory name and
+        # silently exclude everything).
+        try:
+            rel_parts = file_path.relative_to(self.codebase_path).parts[:-1]
+        except ValueError:
+            rel_parts = file_path.parts[:-1]
+        exclude_dirs = set(config.get('exclude_dirs', []))
+        for part in rel_parts:
+            if part in exclude_dirs:
                 return False
         
         # Check exclude patterns with proper glob matching
