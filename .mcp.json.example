@@ -11,6 +11,11 @@
         "VOYAGE_API_KEY": "YOUR_VOYAGE_API_KEY_HERE",
         "VOYAGE_EMBEDDING_MODEL": "voyage-3-large",
 
+        "_VOYAGE_CONTEXT_MODEL_DOC": "For contextual embeddings, set VOYAGE_EMBEDDING_MODEL to voyage-context-4 (or voyage-context-3): each chunk is embedded with the whole document as context. Use small chunks and let the settings below apply.",
+        "_VOYAGE_ENABLE_CHUNKING": "true",
+        "_VOYAGE_MAX_CHUNK_TOKENS": "64  (tokens per chunk; small chunks work best for contextual models)",
+        "_VOYAGE_MAX_DOC_TOKENS": "25600  (a document whose chunks exceed this is split into parts so each part fits the model's 32000-token context window; keep < 32000)",
+
         "_OPENAI_API_KEY": "YOUR_OPENAI_API_KEY_HERE (uncomment if EMBEDDING_PROVIDER=openai)",
         "_OPENAI_EMBEDDING_MODEL": "text-embedding-3-large",
 
