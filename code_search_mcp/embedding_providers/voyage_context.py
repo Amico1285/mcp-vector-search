@@ -1,4 +1,4 @@
-"""VoyageAI voyage-context-3 embedding provider for contextual embeddings."""
+"""VoyageAI voyage-context-* embedding provider for contextual embeddings."""
 import os
 import logging
 from typing import List, Dict, Optional, Tuple
@@ -11,48 +11,80 @@ logger = logging.getLogger(__name__)
 
 
 class VoyageContextProvider(EmbeddingProvider):
-    """Provider for voyage-context-3 contextual embeddings.
-    
+    """Provider for voyage-context-* contextual embeddings (context-3, context-4, ...).
+
     This provider handles the special contextualized embedding API
     that processes chunks in context with each other.
     """
-    
-    # API limits for voyage-context-3
-    MAX_TOKENS_PER_REQUEST = 120000  # Total tokens across all inputs
-    MAX_CHUNKS_PER_REQUEST = 5461    # Total chunks across all inputs (actual API limit)
-    MAX_INPUTS_PER_REQUEST = 1000    # Number of documents
-    TOKEN_LIMIT = 32000              # Max tokens per document part
+
+    # API limits for the voyage-context-* family
+    MAX_TOKENS_PER_REQUEST = 120000  # Total tokens across all inputs in one request
+    MAX_CHUNKS_PER_REQUEST = 16000   # Total chunks across all inputs (Voyage limit: 16K)
+    MAX_INPUTS_PER_REQUEST = 1000    # Max documents (inner lists) per request
+    TOKEN_LIMIT = 32000              # Model context window per example (one document)
+    # A single contextualized_embed "example" (one document = one inner list of its
+    # chunks) is embedded together and must fit the model's 32000-token context
+    # window — contextual embeddings do NOT support truncation. count_tokens() uses
+    # tiktoken cl100k_base, which can differ from Voyage's own tokenizer, so we cap
+    # each document well below TOKEN_LIMIT and split anything larger into parts.
+    PER_DOC_TOKEN_LIMIT = 25600      # Safe per-document token budget (< 32000)
     
     def __init__(
         self,
         max_chunk_tokens: Optional[int] = None,
         min_chunk_tokens: Optional[int] = None,
-        output_dimension: Optional[int] = None
+        output_dimension: Optional[int] = None,
+        model: str = "voyage-context-3",
+        max_doc_tokens: Optional[int] = None
     ):
-        """Initialize voyage-context-3 provider.
-        
+        """Initialize a voyage-context-* contextual provider.
+
         Args:
-            max_chunk_tokens: Maximum tokens per chunk (default: 2048)
-            min_chunk_tokens: Minimum tokens per chunk (default: 64)
+            max_chunk_tokens: Maximum tokens per chunk (default: 64)
+            min_chunk_tokens: Minimum tokens per chunk (default: 1)
             output_dimension: Optional output dimension (256, 512, 1024, 2048)
+            model: Voyage contextual model name (e.g. "voyage-context-3",
+                "voyage-context-4"). All are called via contextualized_embed.
+            max_doc_tokens: Max tokens for one document (one contextualized_embed
+                example). Documents above this are split into parts so each part
+                fits the model's context window. Defaults to PER_DOC_TOKEN_LIMIT.
         """
-        self.model = "voyage-context-3"
-        
+        self.model = model
+
         # Chunk configuration - use reasonable defaults for contextual embeddings
         if max_chunk_tokens is None:
             max_chunk_tokens = 64
         if min_chunk_tokens is None:
             min_chunk_tokens = 1
-        
+
         self.max_chunk_tokens = max_chunk_tokens
         self.min_chunk_tokens = min_chunk_tokens
         self.output_dimension = output_dimension
         self.dimension = output_dimension if output_dimension else 1024
-        
+
+        # Per-document (per-example) token budget. A document whose chunks sum to
+        # more than this is split into parts, each embedded as its own example so
+        # it stays within the model's context window. Kept below TOKEN_LIMIT for
+        # margin against the tiktoken-vs-Voyage tokenizer difference.
+        if max_doc_tokens is None:
+            max_doc_tokens = self.PER_DOC_TOKEN_LIMIT
+        if max_doc_tokens >= self.TOKEN_LIMIT:
+            logger.warning(
+                f"[VoyageContext] max_doc_tokens ({max_doc_tokens}) >= context window "
+                f"({self.TOKEN_LIMIT}); capping at {self.PER_DOC_TOKEN_LIMIT} for safety margin"
+            )
+            max_doc_tokens = self.PER_DOC_TOKEN_LIMIT
+        if max_doc_tokens < self.max_chunk_tokens:
+            max_doc_tokens = self.max_chunk_tokens
+        self.max_doc_tokens = max_doc_tokens
+
         # Initialize Voyage client
         self.client = voyageai.Client()
-        
-        logger.info(f"[VoyageContext] Initialized with chunk_size={max_chunk_tokens}, dimension={self.dimension}")
+
+        logger.info(
+            f"[VoyageContext] Initialized with chunk_size={max_chunk_tokens}, "
+            f"max_doc_tokens={self.max_doc_tokens}, dimension={self.dimension}"
+        )
     
     def get_token_limit(self) -> int:
         """Get the maximum token limit for this provider."""
@@ -76,150 +108,137 @@ class VoyageContextProvider(EmbeddingProvider):
     
     def embed_documents_with_metadata(self, texts: List[str]) -> ChunkedEmbeddingResult:
         """Generate contextual embeddings with chunking metadata.
-        
-        This method handles large documents by:
-        1. Splitting very large documents into manageable parts
-        2. Chunking each part into small pieces
-        3. Using contextualized_embed API to maintain context
-        
+
+        Documents are pre-chunked client-side, then packed into as few
+        contextualized_embed requests as the API limits allow (up to
+        MAX_INPUTS_PER_REQUEST documents / MAX_CHUNKS_PER_REQUEST chunks /
+        MAX_TOKENS_PER_REQUEST tokens per request). Each document is still sent
+        as its own inner list, so its chunks stay contextualized within the
+        document. A document that alone exceeds per-request limits is split into
+        parts individually.
+
+        The returned arrays are grouped by document and ordered by input index
+        (embeddings[i], chunks[i] and metadata[i] describe the same chunk, and
+        all chunks of document N precede those of document N+1). The database
+        updater relies on this strict ordering.
+
         Args:
-            texts: List of text strings to embed
-            
+            texts: List of document strings to embed
+
         Returns:
-            ChunkedEmbeddingResult with embeddings and metadata
+            ChunkedEmbeddingResult with embeddings, metadata and chunk texts
         """
-        all_embeddings = []
-        all_metadata = []
-        all_chunks = []
-        
+        # 1. Pre-chunk every document; classify batchable vs oversized
+        results_by_doc: Dict[int, Tuple[List, List, List]] = {}
+        batchable = []   # [{'doc_idx', 'chunks', 'tokens'}]
+        oversized = []   # [(doc_idx, text)]
+
         for doc_idx, text in enumerate(texts):
-            tokens = count_tokens(text)
-            logger.info(f"[VoyageContext] Processing document {doc_idx}: {tokens:,} tokens")
-            logger.info(f"[VoyageContext] max_chunk_tokens={self.max_chunk_tokens}, MAX_TOKENS_PER_REQUEST={self.MAX_TOKENS_PER_REQUEST}")
-            
-            # Process based on document size
-            if tokens <= self.max_chunk_tokens:
-                # Small document - single chunk
-                logger.info(f"[VoyageContext] Calling _process_small_document (tokens {tokens} <= {self.max_chunk_tokens})")
-                embeddings, metadata, chunks = self._process_small_document(text, doc_idx)
-            elif tokens <= self.MAX_TOKENS_PER_REQUEST:
-                # Medium document - fits in one API call
-                logger.info(f"[VoyageContext] Calling _process_medium_document (tokens {tokens} <= {self.MAX_TOKENS_PER_REQUEST})")
-                embeddings, metadata, chunks = self._process_medium_document(text, doc_idx)
+            doc_tokens = count_tokens(text)
+            if doc_tokens <= self.max_chunk_tokens:
+                # Single chunk — but skip empty/whitespace-only documents, since
+                # the API rejects empty strings and one bad input fails the whole batch.
+                chunks = [text] if (text and text.strip()) else []
             else:
-                # Large document - needs multiple API calls
-                logger.info(f"[VoyageContext] Calling _process_large_document (tokens {tokens} > {self.MAX_TOKENS_PER_REQUEST})")
-                embeddings, metadata, chunks = self._process_large_document(text, doc_idx)
-            
-            all_embeddings.extend(embeddings)
-            all_metadata.extend(metadata)
-            all_chunks.extend(chunks)
-        
+                chunks = [c for c in split_by_tokens(
+                    text, max_tokens=self.max_chunk_tokens, overlap_tokens=0
+                ) if c and c.strip()]
+
+            if not chunks:
+                logger.info(f"[VoyageContext] Document {doc_idx}: no non-empty chunks, skipping")
+                results_by_doc[doc_idx] = ([], [], [])
+                continue
+
+            total_tokens = sum(count_tokens(c) for c in chunks)
+            # A document is sent as one contextualized_embed example, so its chunks
+            # are embedded together and must fit the model's context window. Route
+            # anything above max_doc_tokens to per-document part-splitting;
+            # MAX_TOKENS_PER_REQUEST (120000) only bounds a whole multi-doc request.
+            if len(chunks) > self.MAX_CHUNKS_PER_REQUEST or total_tokens > self.max_doc_tokens:
+                oversized.append((doc_idx, text))
+            else:
+                batchable.append({'doc_idx': doc_idx, 'chunks': chunks, 'tokens': total_tokens})
+
+        # 2. Greedily pack batchable documents into request-sized groups
+        batches = []
+        cur, cur_chunks, cur_tokens = [], 0, 0
+        for item in batchable:
+            n_chunks, n_tokens = len(item['chunks']), item['tokens']
+            if cur and (
+                len(cur) + 1 > self.MAX_INPUTS_PER_REQUEST
+                or cur_chunks + n_chunks > self.MAX_CHUNKS_PER_REQUEST
+                or cur_tokens + n_tokens > self.MAX_TOKENS_PER_REQUEST
+            ):
+                batches.append(cur)
+                cur, cur_chunks, cur_tokens = [], 0, 0
+            cur.append(item)
+            cur_chunks += n_chunks
+            cur_tokens += n_tokens
+        if cur:
+            batches.append(cur)
+
+        logger.info(
+            f"[VoyageContext] Embedding {len(texts)} document(s) via {self.model} "
+            f"(dim={self.dimension}): {len(batchable)} batchable in {len(batches)} "
+            f"API request(s), {len(oversized)} oversized (per-doc splitting)"
+        )
+
+        # 3. One contextualized_embed call per batch
+        for b_idx, batch in enumerate(batches):
+            inputs = [item['chunks'] for item in batch]
+            n_chunks = sum(len(x) for x in inputs)
+            n_tokens = sum(item['tokens'] for item in batch)
+            logger.info(
+                f"[VoyageContext] Request {b_idx + 1}/{len(batches)}: "
+                f"{len(inputs)} doc(s), {n_chunks} chunk(s), {n_tokens} token(s)"
+            )
+            try:
+                result = self.client.contextualized_embed(
+                    inputs=inputs,
+                    model=self.model,
+                    input_type="document",
+                    output_dimension=self.output_dimension
+                )
+            except Exception as e:
+                logger.error(f"[VoyageContext] Request {b_idx + 1} failed: {e}")
+                raise
+
+            for i, item in enumerate(batch):
+                doc_idx = item['doc_idx']
+                chunks = item['chunks']
+                embeddings = result.results[i].embeddings
+                metadata = [{
+                    'type': 'full_file' if len(chunks) == 1 else 'chunk',
+                    'doc_index': doc_idx,
+                    'chunk_index': c_i,
+                    'total_chunks': len(chunks),
+                    'tokens': count_tokens(chunk),
+                } for c_i, chunk in enumerate(chunks)]
+                results_by_doc[doc_idx] = (list(embeddings), metadata, list(chunks))
+
+        # 4. Oversized documents handled individually (part-splitting)
+        for doc_idx, text in oversized:
+            logger.info(f"[VoyageContext] Oversized document {doc_idx}: splitting into parts")
+            embeddings, metadata, chunks = self._process_large_document(text, doc_idx)
+            results_by_doc[doc_idx] = (embeddings, metadata, chunks)
+
+        # 5. Assemble strictly in input order (grouped by doc, ascending doc_index)
+        all_embeddings, all_metadata, all_chunks = [], [], []
+        for doc_idx in range(len(texts)):
+            emb, meta, chks = results_by_doc.get(doc_idx, ([], [], []))
+            all_embeddings.extend(emb)
+            all_metadata.extend(meta)
+            all_chunks.extend(chks)
+
+        logger.info(
+            f"[VoyageContext] Done: {len(all_embeddings)} embedding(s) across "
+            f"{len(texts)} document(s) in {len(batches)} request(s) + {len(oversized)} oversized"
+        )
         return ChunkedEmbeddingResult(
             embeddings=all_embeddings,
             metadata=all_metadata,
             chunks=all_chunks
         )
-    
-    def _process_small_document(self, text: str, doc_idx: int) -> Tuple[List[List[float]], List[Dict], List[str]]:
-        """Process a document that fits in a single chunk.
-        
-        Args:
-            text: Document text
-            doc_idx: Document index
-            
-        Returns:
-            Tuple of (embeddings, metadata, chunks)
-        """
-        try:
-            # Single chunk, single input
-            result = self.client.contextualized_embed(
-                inputs=[[text]],
-                model=self.model,
-                input_type="document",
-                output_dimension=self.output_dimension
-            )
-            
-            embedding = result.results[0].embeddings[0]
-            tokens = count_tokens(text)
-            
-            return (
-                [embedding],
-                [{
-                    'type': 'full_file',
-                    'doc_index': doc_idx,
-                    'tokens': tokens,
-                    'chunk_index': 0,
-                    'total_chunks': 1
-                }],
-                [text]
-            )
-        except Exception as e:
-            logger.error(f"[VoyageContext] Failed to embed small document: {e}")
-            raise
-    
-    def _process_medium_document(self, text: str, doc_idx: int) -> Tuple[List[List[float]], List[Dict], List[str]]:
-        """Process a document that needs chunking but fits in one API call.
-        
-        Args:
-            text: Document text
-            doc_idx: Document index
-            
-        Returns:
-            Tuple of (embeddings, metadata, chunks)
-        """
-        # Split into chunks
-        chunks = split_by_tokens(
-            text,
-            max_tokens=self.max_chunk_tokens,
-            overlap_tokens=0  # No overlap for contextual embeddings
-        )
-        
-        # Filter empty chunks
-        chunks = [c for c in chunks if c and c.strip()]
-        
-        if not chunks:
-            logger.warning(f"[VoyageContext] No valid chunks after splitting")
-            return [], [], []
-        
-        logger.info(f"[VoyageContext] Document split into {len(chunks)} chunks")
-        
-        # Check both chunk count AND total tokens limit for contextualized API
-        total_tokens = sum(count_tokens(chunk) for chunk in chunks)
-        if len(chunks) > self.MAX_CHUNKS_PER_REQUEST or total_tokens > self.TOKEN_LIMIT:
-            logger.warning(
-                f"[VoyageContext] Too many chunks ({len(chunks)}) or tokens ({total_tokens}), "
-                f"processing as large document"
-            )
-            return self._process_large_document(text, doc_idx)
-        
-        try:
-            # Send all chunks as one document (inner list)
-            result = self.client.contextualized_embed(
-                inputs=[chunks],  # Single document with multiple chunks
-                model=self.model,
-                input_type="document",
-                output_dimension=self.output_dimension
-            )
-            
-            embeddings = result.results[0].embeddings
-            
-            # Create metadata for each chunk
-            metadata = []
-            for i, chunk in enumerate(chunks):
-                metadata.append({
-                    'type': 'chunk',
-                    'doc_index': doc_idx,
-                    'chunk_index': i,
-                    'total_chunks': len(chunks),
-                    'tokens': count_tokens(chunk)
-                })
-            
-            return embeddings, metadata, chunks
-            
-        except Exception as e:
-            logger.error(f"[VoyageContext] Failed to embed medium document: {e}")
-            raise
     
     def _process_large_document(self, text: str, doc_idx: int) -> Tuple[List[List[float]], List[Dict], List[str]]:
         """Process a very large document that exceeds API limits.
@@ -239,14 +258,14 @@ class VoyageContextProvider(EmbeddingProvider):
         total_tokens = count_tokens(text)
         logger.info(f"[VoyageContext] Large document ({total_tokens:,} tokens), splitting into parts")
         
-        # Split into parts that fit within token limits
-        # For voyage-context-3 with contextual embeddings:
-        # - Total tokens in chunks must not exceed 32k (TOKEN_LIMIT)
-        # - With small chunks (e.g. 64 tokens), we can have max ~500 chunks
-        # To be safe, let's limit to 400 chunks per part
-        max_chunks_per_part = min(400, self.TOKEN_LIMIT // self.max_chunk_tokens)
-        part_size = max_chunks_per_part * self.max_chunk_tokens  # e.g., 400 * 64 = 25600 tokens
-        logger.info(f"[VoyageContext] Using part_size={part_size} (max {max_chunks_per_part} chunks of {self.max_chunk_tokens} tokens)")
+        # Split into parts that each fit a single contextualized_embed example.
+        # For the voyage-context-* contextual models the whole example (a part and
+        # all its chunks) is embedded together, so it must stay under the model's
+        # context window. We cap each part at max_doc_tokens (< TOKEN_LIMIT) for
+        # margin against the tiktoken-vs-Voyage tokenizer difference.
+        part_size = self.max_doc_tokens
+        max_chunks_per_part = max(1, part_size // self.max_chunk_tokens)
+        logger.info(f"[VoyageContext] Using part_size={part_size} (up to {max_chunks_per_part} chunks of {self.max_chunk_tokens} tokens)")
         parts = split_by_tokens(text, max_tokens=part_size, overlap_tokens=0)
         
         logger.info(f"[VoyageContext] Split into {len(parts)} parts")

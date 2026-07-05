@@ -54,26 +54,31 @@ def create_embedding_provider(provider_type: str = None) -> EmbeddingProvider:
     max_chunk_tokens = os.getenv("MAX_CHUNK_TOKENS", os.getenv("VOYAGE_MAX_CHUNK_TOKENS"))
     min_chunk_tokens = os.getenv("MIN_CHUNK_TOKENS", os.getenv("VOYAGE_MIN_CHUNK_TOKENS"))
     chunk_overlap_tokens = os.getenv("CHUNK_OVERLAP_TOKENS", os.getenv("VOYAGE_CHUNK_OVERLAP_TOKENS"))
-    
+    # Per-document token budget for contextual models: documents larger than this
+    # are split into parts so each part fits the model's context window.
+    max_doc_tokens = os.getenv("MAX_DOC_TOKENS", os.getenv("VOYAGE_MAX_DOC_TOKENS"))
+
     # Convert to integers if present
     max_chunk_tokens = int(max_chunk_tokens) if max_chunk_tokens else None
-    min_chunk_tokens = int(min_chunk_tokens) if min_chunk_tokens else None  
+    min_chunk_tokens = int(min_chunk_tokens) if min_chunk_tokens else None
     chunk_overlap_tokens = int(chunk_overlap_tokens) if chunk_overlap_tokens else None
-    
+    max_doc_tokens = int(max_doc_tokens) if max_doc_tokens else None
+
     logger.info(f"[EMBEDDING_PROVIDER] Universal chunking config:")
     logger.info(f"  Enable chunking: {enable_chunking}")
     logger.info(f"  Max chunk tokens: {max_chunk_tokens}")
     logger.info(f"  Min chunk tokens: {min_chunk_tokens}")
     logger.info(f"  Chunk overlap: {chunk_overlap_tokens}")
+    logger.info(f"  Max doc tokens: {max_doc_tokens}")
     
     if provider_type == 'voyage':
         model = get_voyage_embedding_model()
         logger.info(f"[EMBEDDING_PROVIDER] Voyage model: {model}")
         
-        # Check if it's voyage-context-3
-        if model == "voyage-context-3":
+        # Check if it's a contextual model (voyage-context-3, voyage-context-4, ...)
+        if model.startswith("voyage-context"):
             # Use specialized context provider
-            logger.info("[EMBEDDING_PROVIDER] Using VoyageContextProvider for voyage-context-3")
+            logger.info(f"[EMBEDDING_PROVIDER] Using VoyageContextProvider for {model}")
             # Context model has specific defaults if not provided
             if max_chunk_tokens is None:
                 max_chunk_tokens = 64  # Default for context model
@@ -81,7 +86,10 @@ def create_embedding_provider(provider_type: str = None) -> EmbeddingProvider:
                 min_chunk_tokens = 1  # Default for context model
             return VoyageContextProvider(
                 max_chunk_tokens=max_chunk_tokens,
-                min_chunk_tokens=min_chunk_tokens
+                min_chunk_tokens=min_chunk_tokens,
+                model=model,
+                output_dimension=get_voyage_output_dimension(),
+                max_doc_tokens=max_doc_tokens
             )
         else:
             # Use standard voyage provider
