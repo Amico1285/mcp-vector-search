@@ -10,6 +10,7 @@ import chromadb
 from .aifilter import AIFilter
 from . import env_config
 from .embedding_providers import create_embedding_provider
+from .chroma_utils import get_all_records
 
 # Setup logging
 logger = logging.getLogger('code_searcher')
@@ -439,8 +440,9 @@ class CodebaseSearcher:
                 )
                 total_files = len(collection_data['ids']) if collection_data['ids'] else 0
             except:
-                # Fallback: count unique file paths from all records
-                collection_data = self.collection.get()
+                # Fallback: count unique file paths from all records. Paginate to
+                # avoid the "too many SQL variables" overflow on large collections.
+                collection_data = get_all_records(self.collection, include=['metadatas'])
                 unique_files = set()
                 if collection_data.get('metadatas'):
                     for metadata in collection_data['metadatas']:

@@ -14,6 +14,7 @@ from .embedding_providers import create_embedding_provider
 from .embedding_providers.base import ChunkedEmbeddingResult
 from .embedding_providers.voyage import VoyageProvider
 from .project_analyzer import ProjectAnalyzer
+from .chroma_utils import get_all_records, delete_by_ids
 
 # Hybrid search imports (conditional - only used if hybrid search is enabled)
 try:
@@ -171,11 +172,18 @@ class DatabaseUpdater:
             logger.debug(f"[FILTER] Skipping {file_path.name}: extension {file_path.suffix} not in {config['extensions']}")
             return False
         
-        # Check exclude directories - only check in path parts, not in filename
-        path_parts = file_path.parts[:-1]  # Exclude the filename itself
-        for exclude_dir in config['exclude_dirs']:
-            if any(exclude_dir in part or part == exclude_dir for part in path_parts):
-                logger.info(f"[FILTER] Skipping {file_path.name}: excluded directory '{exclude_dir}' in path")
+        # Check exclude directories. Match exact path SEGMENTS relative to the
+        # codebase root: a substring match against the absolute path would also
+        # match a fragment of the codebase base-directory name (present in every
+        # file's absolute path), silently excluding the whole corpus.
+        try:
+            rel_parts = file_path.relative_to(self.codebase_path).parts[:-1]
+        except ValueError:
+            rel_parts = file_path.parts[:-1]
+        exclude_dirs = set(config.get('exclude_dirs', []))
+        for part in rel_parts:
+            if part in exclude_dirs:
+                logger.info(f"[FILTER] Skipping {file_path.name}: excluded directory '{part}'")
                 return False
         
         # Check exclude patterns with proper glob matching
@@ -485,8 +493,9 @@ class DatabaseUpdater:
         current_files = self.scan_files(config, specific_files)
         logger.info(f"Found {len(current_files)} files in codebase")
         
-        # Get existing files from database
-        existing_data = self.collection.get()
+        # Get existing files from database. Paginate: on large collections a single
+        # unbounded get() overflows SQLite's variable limit ("too many SQL variables").
+        existing_data = get_all_records(self.collection, include=['metadatas'])
         existing_files = {}
         existing_ids_by_path = {}  # Map file paths to all their IDs (including chunks)
         
@@ -562,7 +571,8 @@ class DatabaseUpdater:
                     ids_to_delete.extend(existing_ids_by_path[file_path])
             
             if ids_to_delete:
-                self.collection.delete(ids=ids_to_delete)
+                # Paginate: deleting a huge id list overflows SQLite's variable limit.
+                delete_by_ids(self.collection, ids_to_delete)
                 logger.info(f"Deleted {len(files_to_delete)} files ({len(ids_to_delete)} total entries) from database")
         
         # Process new and modified files
@@ -685,8 +695,9 @@ class DatabaseUpdater:
         
         # Add current statistics
         collection_stats = self.collection.count()
-        # Count actual unique files (not chunks)
-        all_data = self.collection.get()
+        # Count actual unique files (not chunks). Paginate to avoid the
+        # "too many SQL variables" overflow on large collections.
+        all_data = get_all_records(self.collection)
         unique_files = set()
         for i, entry_id in enumerate(all_data['ids']):
             if entry_id.startswith('file:'):
@@ -701,8 +712,10 @@ class DatabaseUpdater:
         result.append(f"Total database entries: {collection_stats} (includes chunks)")
         logger.info(f"Total files indexed: {actual_file_count}, database entries: {collection_stats}")
         
-        # Mark database as vectorized
-        metadata = self.collection.metadata
+        # Mark database as vectorized. Strip hnsw:space — ChromaDB rejects modify()
+        # metadata that carries the distance-function key (valid only at creation).
+        metadata = dict(self.collection.metadata or {})
+        metadata.pop('hnsw:space', None)
         metadata['vectorized'] = 'true'
         self.collection.modify(metadata=metadata)
         
@@ -802,10 +815,10 @@ class DatabaseUpdater:
             if specific_files:
                 # For specific files, get all documents and filter by file path later
                 # This is needed because file paths might be stored as relative or absolute
-                collection_data = self.collection.get(include=['documents', 'metadatas'])
+                collection_data = get_all_records(self.collection, include=['documents', 'metadatas'])
                 logger.info(f"Filtering from {len(collection_data.get('ids', []))} documents for {len(specific_files)} specific files")
             else:
-                collection_data = self.collection.get(include=['documents', 'metadatas'])
+                collection_data = get_all_records(self.collection, include=['documents', 'metadatas'])
             
             if not collection_data['ids']:
                 logger.warning("No documents found in ChromaDB collection")

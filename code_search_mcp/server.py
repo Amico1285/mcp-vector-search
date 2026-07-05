@@ -269,8 +269,8 @@ def get_server_info() -> str:
                 model = env_config.get_voyage_embedding_model()
                 
                 # Use appropriate method based on model
-                if model == "voyage-context-3":
-                    # Use contextualized_embed for voyage-context-3
+                if model.startswith("voyage-context"):
+                    # Use contextualized_embed for voyage-context-* models
                     result = client.contextualized_embed(
                         [["test"]],  # List of lists for contextualized API
                         model=model,
@@ -518,6 +518,17 @@ Try creating a new configuration:
             except:
                 pass
         
+        # Mark the run as 'running' synchronously BEFORE starting the thread.
+        # Otherwise the wait=True poll loop below can read the PREVIOUS run's
+        # leftover 'completed' status (the background thread has not overwritten
+        # it yet) and return a stale, one-run-behind report.
+        try:
+            status_path.parent.mkdir(exist_ok=True)
+            with open(status_path, 'w') as f:
+                json.dump({'status': 'running', 'message': 'Starting database update...'}, f)
+        except Exception:
+            pass
+
         # Start update in background thread - no analyze parameter needed
         thread = threading.Thread(
             target=_run_update_in_background,
@@ -989,20 +1000,30 @@ def set_config(
         
         client = chromadb.PersistentClient(path=str(db_path))
         
+        # Always pin the distance function to cosine so this path stays
+        # consistent with reset_db() and the indexer (get_or_create_collection).
+        # If it is omitted here, ChromaDB defaults to l2 and a later
+        # modify()/get_or_create against a cosine collection raises
+        # "Changing the distance function of a collection ... is not supported".
         if collection is None:
-            # Create new collection with configuration
+            # Create new collection. Set hnsw:space=cosine at CREATE time to match
+            # reset_db() and the indexer. NOTE: ChromaDB rejects any modify() whose
+            # metadata still carries the hnsw:space key, so every modify() below
+            # strips it — the distance function set at creation is unaffected.
             try:
                 collection = client.create_collection(
                     name=db_name,
-                    metadata={'config': json.dumps(config), 'vectorized': 'false'}
+                    metadata={'config': json.dumps(config), 'vectorized': 'false', 'hnsw:space': 'cosine'}
                 )
             except:
                 # Collection might exist, get it
                 collection = client.get_collection(name=db_name)
                 collection.modify(metadata={'config': json.dumps(config), 'vectorized': 'false'})
         else:
-            # Update existing collection
-            metadata = collection.metadata
+            # Update existing collection. Strip hnsw:space before modify (ChromaDB
+            # forbids it there); the collection's distance function is untouched.
+            metadata = dict(collection.metadata or {})
+            metadata.pop('hnsw:space', None)
             metadata['config'] = json.dumps(config)
             if is_new_config:
                 metadata['vectorized'] = 'false'
