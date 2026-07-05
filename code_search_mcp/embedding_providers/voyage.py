@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 class VoyageProvider(EmbeddingProvider):
     """Provider for standard Voyage embedding models.
     
-    Supports all Voyage models except voyage-context-3.
+    Supports all Voyage models except the voyage-context-* family
+    (those are handled by VoyageContextProvider).
     Handles large documents by chunking them into manageable pieces.
     """
     
