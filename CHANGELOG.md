@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — 2026-07-05
+
+### New
+- **voyage-context-4 support.** The contextual embedding provider now accepts the whole `voyage-context-*` family (`voyage-context-3`, `voyage-context-4`, …) instead of being hardcoded to `voyage-context-3`. Set `VOYAGE_EMBEDDING_MODEL=voyage-context-4` to use it.
+- **`VOYAGE_MAX_DOC_TOKENS`** (default `25600`) — per-document token budget for contextual models. A document whose chunks sum to more than this is split into parts, each embedded as its own contextualized example so it fits the model's 32000-token context window. `.mcp.json.example` documents it alongside the other `VOYAGE_*` chunking knobs.
+
+### Fixed
+- **Large corpora no longer abort indexing with "too many SQL variables".** ChromaDB's local (rusqlite) backend binds one SQL variable per returned row, so a single unbounded `collection.get()` overflowed SQLite's 32766-variable limit once a collection held more than ~32766 records. This aborted `update_db()` on large corpora *after* every embedding had already been written (e.g. during the final stats pass). All unbounded reads now page through the collection well below the limit.
+- **Documents larger than the context window are split instead of failing.** Contextual embeddings do not support truncation, so any document whose chunks summed to more than 32000 tokens previously failed with "the example … does not fit into the model's context window of 32000 tokens". Oversized documents are now split into parts (bounded by `VOYAGE_MAX_DOC_TOKENS`); the per-document threshold was previously mis-compared against the whole-request budget (120000) instead of the per-document context window.
+- **Empty documents no longer fail a whole batch.** Contextual requests now pack multiple documents per API call and skip empty/whitespace-only inputs, which the Voyage API rejects (one bad input used to fail the entire batch).
+- **`exclude_dirs` matches exact path segments** relative to the codebase root instead of doing a substring match against the absolute path. Previously an exclude entry that was a substring of the codebase's own parent folder name silently excluded everything (0 files indexed).
+- **No more "Changing the distance function" crash on config/reindex.** The cosine-space metadata is set only when the collection is created and stripped from every `collection.modify()` call — ChromaDB rejects `hnsw:space` in `modify()`.
+- **`update_db()` reports its own run, not the previous one.** The `running` status is written synchronously before the background thread starts, so an immediate `get_server_info()` (or `wait=True`) no longer surfaces the prior run's stale `completed`/`error` status.
+
+### Internal
+- New `chroma_utils.py`: `get_all_records()` (paginated `get`) and `delete_by_ids()` (paginated `delete`), used across the updater and searcher.
+- Contextual provider rewritten to batch documents per request and preserve the strict ascending-`doc_index` ordering the database updater relies on. Removed dead `_process_small_document` / `_process_medium_document`.
+
 ## 0.4.2 — 2026-04-27
 
 ### Documentation
